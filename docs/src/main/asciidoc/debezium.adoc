@@ -27,7 +27,7 @@ Change Data Capture is a powerful pattern for building:
 - *Event-Driven Architectures* - React to data changes and trigger business processes
 - *Materialized Views & Caches* - Maintain derived data structures and invalidate caches efficiently
 - *Audit Trails* - Track all changes to data for compliance and debugging
-- *Search Index Updates* - Keep Elasticsearch or other search engines synchronized with your database
+- *Search Index Updates* - Keep search engines synchronized with your database
 - *CQRS Implementation* - Build read models from write model changes
 
 Unlike traditional polling approaches that repeatedly query the database for changes, Debezium:
@@ -45,10 +45,10 @@ These extensions integrate Debezium with the Quarkus lifecycle, allowing you to 
 
 The Quarkus Debezium extensions provide:
 
-- *Debezium Engine with Connector* - Run Debezium connectors directly inside your Quarkus application
-- *No Kafka Required* - Consume change events without deploying Kafka infrastructure
-- *Dev Services* - Automatically provision databases with CDC enabled during development
-- *Native Support* - Full GraalVM native compilation support
+- Run Debezium connectors directly inside your Quarkus application
+- Processing change events without Kafka
+- Automatic CDC-ready databases via Dev Services
+- GraalVM/Mandrel native image support
 
 [NOTE]
 ====
@@ -145,7 +145,7 @@ Available offset storage options:
 - *JDBC*: `io.debezium.storage.jdbc.offset.JdbcOffsetBackingStore`
 - *Kafka*: `org.apache.kafka.connect.storage.KafkaOffsetBackingStore`
 
-In the same way, databases that support schema changes (DDL), Debezium needs to track the schema evolution.
+In the same way, databases that support schema changes (DDL), Debezium can track the schema evolution.
 
 - *Memory*: `io.debezium.relational.history.MemorySchemaHistory`
 - *File*: `io.debezium.storage.file.history.FileSchemaHistory`
@@ -194,8 +194,8 @@ The `CapturingEvent<SourceRecord>` wrapper provides access to the raw Kafka Conn
 - *topic*: The destination topic name (format: `<prefix>.<database>.<table>`)
 - *sourcePartition*: Information about the source (database, server, etc.)
 - *sourceOffset*: Position in the transaction log
-- *key*: The record key (usually the primary key of the changed row)
-- *value*: The change event envelope with before/after states
+- *key*: The record key (usually the primary key of the changed row) as `Struct` type
+- *value*: The change event envelope with before/after states as `Struct` type
 
 === Filtering Events by Destination
 
@@ -239,12 +239,12 @@ public class ProductEventHandler {
     @Capturing(destination = "native.inventory.products")
     public void handleProduct(CapturingEvent<Product> record) { // <1>
         switch (record) { // <2>
-            case Create<SourceRecord> event -> {}
-            case Delete<SourceRecord> event -> {}
-            case Message<SourceRecord> event -> {}
-            case Read<SourceRecord> event -> {}
-            case Truncate<SourceRecord> event -> {}
-            case Update<SourceRecord> event -> {}
+            case Create<Product> event -> {}
+            case Delete<Product> event -> {}
+            case Message<Product> event -> {}
+            case Read<Product> event -> {}
+            case Truncate<Product> event -> {}
+            case Update<Product> event -> {}
         }
     }
 }
@@ -325,6 +325,8 @@ public class LifecycleListener {
 
 }
 ----
+
+The complete events meaning are available in the https://debezium.io/documentation/reference/3.4/integrations/quarkus-debezium-engine-extension.html#_lifecycle_events[official documentation].
 
 === Heartbeat Events
 
@@ -447,7 +449,7 @@ public void handleProduct(ChangeEvent<ProductKey, Product> event) {
 
 [WARNING]
 ====
-By default, any uncaught exception will cause the connector to stop.
+By default, any uncaught exception will cause the connector to stop and emit a `ConnectorStoppedEvent`.
 Implement proper error handling and decide whether to:
 
 - Stop the connector (rethrow exception)
@@ -480,7 +482,7 @@ public class ProductHandler {
 [[debezium-dev-services]]
 === Using Dev Services
 
-Quarkus provides Dev Services for Debezium, which automatically provisions a database with CDC enabled during development.
+Quarkus provides Dev Services for Debezium, which automatically provisions a CDC-ready database during development.
 
 When you add a Debezium extension and run in dev mode, Quarkus will:
 
@@ -680,7 +682,7 @@ quarkus.debezium.max.batch.size=512
 
 **Solutions**:
 
-1. Ensure connector is running and consuming events
+1. Ensure connector is https://debezium.io/documentation/reference/stable/connectors/postgresql.html#postgresql-overview[running] and consuming events
 2. Check for long-running transactions blocking slot advancement
 3. Monitor slot lag:
 +
@@ -774,7 +776,7 @@ The following properties are common across all Debezium connectors:
 
 |`quarkus.debezium.plugin.name`
 |`decoderbufs`
-|Logical decoding plugin: `pgoutput`, `wal2json`, `decoderbufs`
+|Logical decoding plugin: `pgoutput`, `decoderbufs`
 
 |`quarkus.debezium.slot.name`
 |`debezium`
