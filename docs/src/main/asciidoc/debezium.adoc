@@ -18,7 +18,7 @@ This guide demonstrates how your Quarkus application can utilize Debezium to cap
 == Introduction
 
 https://debezium.io[Debezium] is an open-source distributed platform for Change Data Capture (CDC).
-It streams real-time changes from databases into event-driven systems by monitoring database transaction logs and publishing change events (such as inserts, updates, and deletes).
+It streams real-time changes from databases into event-driven systems by capturing changes from database transaction logs (such as inserts, updates, and deletes) and publishing them to the target.
 This enables applications to react to data changes as they happen, without polling the database.
 
 Change Data Capture is a powerful pattern for building:
@@ -225,7 +225,7 @@ Debezium connector destination is formed from the name of the prefix defined in 
 
 === Working with Typed Change Events
 
-Instead of working with raw `SourceRecord` objects, you can deserialize change events into typed Java objects:
+Instead of working with raw `SourceRecord` objects, you can deserialize change events into typed Java objects, often referred to as POJOs:
 
 [source,java]
 ----
@@ -648,7 +648,7 @@ public void onSnapshot(SnapshotCompletedEvent event) {
 }
 ----
 
-3. Verify transaction log retention (events might have expired)
+3. Verify transaction log retention (logs may have been purged)
 
 === High Memory Usage
 
