@@ -60,11 +60,12 @@ For connectors specific configuration and requirements take a look to https://de
 
 The following datasource are supported by Debezium:
 
-- `quarkus-debezium-postgres` extension for Postgres Connector
-- `quarkus-debezium-mongodb` extension for Mongodb Connector
-- `quarkus-debezium-mysql` extension for MySQL Connector
-- `quarkus-debezium-mariadb` extension for MariaDB Connector
-- `quarkus-debezium-sqlserver` extension for MS Sql Server Connector
+- `debezium-quarkus-postgres` extension for Postgres Connector
+- `debezium-quarkus-mongodb` extension for Mongodb Connector
+- `debezium-quarkus-mysql` extension for MySQL Connector
+- `debezium-quarkus-mariadb` extension for MariaDB Connector
+- `debezium-quarkus-sqlserver` extension for MS Sql Server Connector
+- `debezium-quarkus-db2` extension for db2 Connector
 
 === Add Debezium Extension
 
@@ -136,7 +137,7 @@ You typically only need to specify connector-specific settings.
 === Storing Debezium State
 
 Debezium tracks its position in the database transaction log using an offset storage mechanism.
-This ensures that if your application restarts, it continues from where it left off without missing or duplicating events.
+This ensures that if your application restarts, it continues from where it left off with at-least-one delivery.
 
 Available offset storage options:
 
@@ -369,8 +370,14 @@ import org.apache.kafka.connect.data.Struct;
 @ApplicationScoped
 public class PostProcessorHandler {
 
+    /**
+     * Apply the post processor to the supplied key and value.
+     *
+     * @param key the event's key, may be {@code null}
+     * @param value the event's value, may be {@code null}
+     */
     @PostProcessing
-    public void processing(Object key, Struct struct) {
+    public void processing(Object key, Struct value) {
         // apply your logic
     }
 }
@@ -380,7 +387,12 @@ Post-processors are called for every event before they're dispatched to `@Captur
 
 === Custom Data Type Converters
 
-For database-specific types that need special handling, implement custom converters:
+For database-specific types that need special handling, like:
+
+- Debezium's opinionated representation of the column's value is inadequate for the application
+- A column type isn't natively supported, but available in the logs and it needs to be handled
+
+you can implement a custom converter in this way:
 
 [source,java]
 ----
@@ -699,6 +711,7 @@ FROM pg_replication_slots;
 ----
 SELECT pg_drop_replication_slot('slot_name');
 ----
+5. enable `heartbeat.interval.ms` and `heartbeat.action.query` to advance https://debezium.io/documentation/reference/stable/connectors/postgresql.html#postgresql-wal-disk-space[offsets when there's no data churn]
 
 == Configuration Reference
 
