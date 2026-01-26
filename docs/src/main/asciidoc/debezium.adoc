@@ -1,0 +1,868 @@
+////
+This guide is maintained in the main Quarkus repository
+and pull requests should be submitted there:
+https://github.com/quarkusio/quarkus/tree/main/docs/src/main/asciidoc
+////
+= Change data Capture with Quarkus and Debezium
+include::_attributes.adoc[]
+:categories: database
+:summary: This guide demonstrates how your Quarkus application can utilize Debezium to capture events from the database.
+:topics: database,debezium,cdc
+:extensions: io.quarkus:quarkus-debezium-postgres
+:numbered:
+:sectnums:
+:sectnumlevels: 4
+
+This guide demonstrates how your Quarkus application can utilize Debezium to capture change events from databases.
+
+== Introduction
+
+https://debezium.io[Debezium] is an open-source distributed platform for Change Data Capture (CDC).
+It streams real-time changes from databases into event-driven systems by capturing changes from database transaction logs (such as inserts, updates, and deletes) and publishing them to the target.
+This enables applications to react to data changes as they happen, without polling the database.
+
+Change Data Capture is a powerful pattern for building:
+
+- *Data Synchronization* - Keep multiple databases or systems in sync in real-time
+- *Event-Driven Architectures* - React to data changes and trigger business processes
+- *Materialized Views & Caches* - Maintain derived data structures and invalidate caches efficiently
+- *Audit Trails* - Track all changes to data for compliance and debugging
+- *Search Index Updates* - Keep search engines synchronized with your database
+- *CQRS Implementation* - Build read models from write model changes
+
+Unlike traditional polling approaches that repeatedly query the database for changes, Debezium:
+
+- Captures *every* change with minimal latency
+- Imposes minimal overhead on the database
+- Guarantees the order of changes
+- Can capture the full state before and after each change
+- Works at the database transaction log level
+
+== Quarkus Extensions for Debezium
+
+Quarkus provides native integration with Debezium through dedicated extensions for each supported database.
+These extensions integrate Debezium with the Quarkus lifecycle, allowing you to consume change events directly in your application code using CDI and annotations.
+
+The Quarkus Debezium extensions provide:
+
+- Run Debezium connectors directly inside your Quarkus application
+- Processing change events without Kafka
+- Automatic CDC-ready databases via Dev Services
+- GraalVM/Mandrel native image support
+
+[NOTE]
+====
+This guide provides an in-depth look on Debezium Extensions.
+For connectors specific configuration and requirements take a look to https://debezium.io/documentation/reference/stable/index.html[official Documentation].
+====
+
+=== Supported datasource
+
+The following datasource are supported by Debezium:
+
+- `debezium-quarkus-postgres` extension for Postgres Connector
+- `debezium-quarkus-mongodb` extension for Mongodb Connector
+- `debezium-quarkus-mysql` extension for MySQL Connector
+- `debezium-quarkus-mariadb` extension for MariaDB Connector
+- `debezium-quarkus-sqlserver` extension for MS Sql Server Connector
+- `debezium-quarkus-db2` extension for db2 Connector
+
+=== Add Debezium Extension
+
+You can add the extension for your database by running the following command in your project base directory (for example `postgres`):
+
+:add-extension-extensions: quarkus-debezium-postgres
+include::{includes}/devtools/extension-add.adoc[]
+
+This will add the following to your build file:
+
+[source,xml,role="primary asciidoc-tabs-target-sync-cli asciidoc-tabs-target-sync-maven"]
+.pom.xml
+----
+<dependency>
+    <groupId>io.debezium</groupId>
+    <artifactId>quarkus-debezium-postgres</artifactId>
+</dependency>
+----
+
+[source,gradle,role="secondary asciidoc-tabs-target-sync-gradle"]
+.build.gradle
+----
+implementation("io.quarkus:quarkus-debezium-postgres")
+----
+
+== Configuring Debezium Connector
+
+The Debezium connector is configured using standard Quarkus configuration properties in your `application.properties` file. The configuration is composed by three section:
+
+- Debezium configuration for destination topic, offset and schema storage
+- https://quarkus.io/guides/datasource[Datasource configuration]
+- Datasource specific connector configuration
+
+A minimal postgres configuration looks like this:
+
+[source,properties]
+----
+quarkus.debezium.name=my-connector                                              # <1>
+quarkus.debezium.schema.history.internal=io.debezium.relational.history.MemorySchemaHistory # <2>
+quarkus.debezium.offset.storage=org.apache.kafka.connect.storage.MemoryOffsetBackingStore # <3>
+quarkus.debezium.topic.prefix=myapp                                             # <4>
+
+# Database connection
+quarkus.debezium.database.hostname=localhost                                    # <5>
+quarkus.debezium.database.port=5432
+quarkus.debezium.database.user=postgres
+quarkus.debezium.database.password=postgres
+quarkus.debezium.database.dbname=mydb
+
+# PostgreSQL specific
+quarkus.debezium.plugin.name=pgoutput                                          # <6>
+quarkus.debezium.slot.name=quarkus_debezium_slot                               # <7>
+----
+
+<1> Logical name for the connector instance
+<2> Where to store the schema changes. For production, consider persistent storage like file or database storage.
+<3> Where to store connector offsets (position in transaction log). For production, consider persistent storage like file or database storage.
+<4> Prefix for generated topic names (even though we're not using Kafka, Debezium uses topic names internally)
+<5> Database connection details
+<6> PostgreSQL logical decoding plugin to use (`pgoutput` is the native PostgreSQL plugin)
+<7> Name of the replication slot to create
+
+[TIP]
+====
+During development with <<debezium-dev-services>>, many of these properties are configured automatically.
+You typically only need to specify connector-specific settings.
+====
+
+=== Storing Debezium State
+
+Debezium tracks its position in the database transaction log using an offset storage mechanism.
+This ensures that if your application restarts, it continues from where it left off with at-least-one delivery.
+
+Available offset storage options:
+
+- *Memory* (default for development): `org.apache.kafka.connect.storage.MemoryOffsetBackingStore`
+- *File*: `org.apache.kafka.connect.storage.FileOffsetBackingStore`
+- *JDBC*: `io.debezium.storage.jdbc.offset.JdbcOffsetBackingStore`
+- *Kafka*: `org.apache.kafka.connect.storage.KafkaOffsetBackingStore`
+
+In the same way, databases that support schema changes (DDL), Debezium can track the schema evolution.
+
+- *Memory*: `io.debezium.relational.history.MemorySchemaHistory`
+- *File*: `io.debezium.storage.file.history.FileSchemaHistory`
+- *JDBC*: `io.debezium.storage.jdbc.offset.JdbcOffsetBackingStore`
+- *Kafka*: `org.apache.kafka.connect.storage.KafkaOffsetBackingStore`
+
+For production deployments, use storages that ensure offsets survive application restarts. For a complete list of available storage and configuration, please take a look to the https://debezium.io/documentation/reference/stable/configuration/storage.html[official documentation section].
+
+
+== Capturing Change Events
+
+The primary way to consume change events in Quarkus with Debezium is using the `@Capturing` annotation.
+This annotation allows you to create methods that receive change events from the database.
+
+=== Basic Event Capture
+
+Here's a simple example that captures all change events:
+
+[source,java]
+----
+import io.debezium.quarkus.cdi.Capturing;
+import io.debezium.quarkus.cdi.CapturingEvent;
+import org.apache.kafka.connect.source.SourceRecord;
+
+import jakarta.enterprise.context.ApplicationScoped;
+
+@ApplicationScoped
+public class ChangeEventHandler {
+
+    @Capturing
+    public void handleChangeEvent(CapturingEvent<SourceRecord> event) {
+        SourceRecord record = event.record();
+
+        System.out.println("Received change event:");
+        System.out.println("  Topic: " + record.topic());
+        System.out.println("  Partition: " + record.sourcePartition());
+        System.out.println("  Offset: " + record.sourceOffset());
+        System.out.println("  Key: " + record.key());
+        System.out.println("  Value: " + record.value());
+    }
+}
+----
+
+The `CapturingEvent<SourceRecord>` wrapper provides access to the raw Kafka Connect `SourceRecord` that contains:
+
+- *topic*: The destination topic name (format: `<prefix>.<database>.<table>`)
+- *sourcePartition*: Information about the source (database, server, etc.)
+- *sourceOffset*: Position in the transaction log
+- *key*: The record key (usually the primary key of the changed row) as `Struct` type
+- *value*: The change event envelope with before/after states as `Struct` type
+
+=== Filtering Events by Destination
+
+You can filter events to only receive changes from specific tables:
+
+[source,java]
+----
+@ApplicationScoped
+public class ProductChangeHandler {
+
+    @Capturing(destination = "native.inventory.products")  // <1>
+    public void handleProductChange(CapturingEvent<SourceRecord> event) {
+        System.out.println("Product table changed!");
+    }
+
+    @Capturing(destination = "native.inventory.orders")    // <2>
+    public void handleOrderChange(CapturingEvent<SourceRecord> event) {
+        System.out.println("Order table changed!");
+    }
+}
+----
+
+<1> Only receives events from the `products` table
+<2> Only receives events from the `orders` table
+
+Debezium connector destination is formed from the name of the prefix defined in the configuration with the database and the table in which the change was made. In some cases the destination is redefined using an https://debezium.io/documentation/reference/stable/transformations/topic-routing.html[SMT].
+
+=== Working with Typed Change Events
+
+Instead of working with raw `SourceRecord` objects, you can deserialize change events into typed Java objects, often referred to as POJOs:
+
+[source,java]
+----
+import io.debezium.data.Envelope;
+import io.debezium.quarkus.cdi.Capturing;
+import io.debezium.quarkus.cdi.ChangeEvent;
+
+@ApplicationScoped
+public class ProductEventHandler {
+
+    @Capturing(destination = "native.inventory.products")
+    public void handleProduct(CapturingEvent<Product> record) { // <1>
+        switch (record) { // <2>
+            case Create<Product> event -> {}
+            case Delete<Product> event -> {}
+            case Message<Product> event -> {}
+            case Read<Product> event -> {}
+            case Truncate<Product> event -> {}
+            case Update<Product> event -> {}
+        }
+    }
+}
+----
+
+<1> Declare the value type for automatic deserialization
+<2> Get the operation type
+
+To achive it, there is an existing `ObjectMapperDeserializer` that can be used to deserialize all data objects via Jackson. The corresponding deserializer class needs to be subclassed. So, we have to create a `ProductDeserializer` that extends the `ObjectMapperDeserializer`.
+
+[source,java]
+----
+public class ProductDeserializer extends ObjectMapperDeserializer<Product> {
+    public ProductDeserializer() {
+        super(Product.class);
+    }
+}
+----
+
+Your `Product` class should match the database schema:
+
+[source,java]
+----
+public record Product(Long id, String name, String description, Double price) {}
+----
+
+[NOTE]
+====
+Debezium uses Jackson for JSON deserialization.
+Make sure your classes have appropriate constructors and getters/setters, or use Jackson annotations to control serialization.
+====
+
+Finally configure your channel to use the Jackson deserializer for a particular destination:
+
+[source, properties]
+----
+quarkus.debezium.capturing.products.destination=native.inventory.products
+quarkus.debezium.capturing.products.deserializer=com.acme.product.jackson.ProductDeserializer
+----
+
+== Lifecycle Events and Monitoring
+
+Debezium provides events about the connector lifecycle, allowing you to monitor and react to connector state changes.
+
+=== Connector Lifecycle Events
+
+[source,java]
+----
+import io.debezium.runtime.events.*;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
+
+@ApplicationScoped
+public class LifecycleListener {
+
+    public void started(@Observes ConnectorStartedEvent event) {
+        // your logic
+    }
+
+    public void stopped(@Observes ConnectorStoppedEvent connectorStoppedEvent) {
+        // your logic
+    }
+    public void tasksStarted(@Observes TasksStartedEvent tasksStartedEvent) {
+        // your logic
+    }
+    public void tasksStopped(@Observes TasksStoppedEvent tasksStoppedEvent) {
+        // your logic
+    }
+    public void pollingStarted(@Observes PollingStartedEvent pollingStartedEvent) {
+        // your logic
+    }
+    public void pollingStopped(@Observes PollingStoppedEvent pollingStoppedEvent) {
+        // your logic
+    }
+    public void completed(@Observes DebeziumCompletionEvent debeziumCompletionEvent) {
+        // your logic
+    }
+
+}
+----
+
+The complete events meaning are available in the https://debezium.io/documentation/reference/3.4/integrations/quarkus-debezium-engine-extension.html#_lifecycle_events[official documentation].
+
+=== Heartbeat Events
+
+Debezium can send periodic heartbeat events even when there are no data changes.
+This is useful for monitoring connector health and advancing offsets:
+
+[source,properties]
+----
+quarkus.debezium.heartbeat.interval.ms=5000
+quarkus.debezium.heartbeat.topics.prefix=__debezium-heartbeat
+----
+
+[source,java]
+----
+import io.debezium.runtime.events.DebeziumHeartbeat;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
+
+@ApplicationScoped
+public class HeartbeatListener {
+
+    public void heartbeat(@Observes DebeziumHeartbeat heartbeat) {
+        //
+    }
+}
+----
+
+== Advanced Features
+
+=== Post-Processing Events
+
+You can implement custom post-processors to transform or enrich events before they reach your handlers:
+
+[source,java]
+----
+import io.debezium.runtime.PostProcessing;
+import jakarta.enterprise.context.ApplicationScoped;
+import org.apache.kafka.connect.data.Struct;
+
+@ApplicationScoped
+public class PostProcessorHandler {
+
+    /**
+     * Apply the post processor to the supplied key and value.
+     *
+     * @param key the event's key, may be {@code null}
+     * @param value the event's value, may be {@code null}
+     */
+    @PostProcessing
+    public void processing(Object key, Struct value) {
+        // apply your logic
+    }
+}
+----
+
+Post-processors are called for every event before they're dispatched to `@Capturing` methods.
+
+=== Custom Data Type Converters
+
+For database-specific types that need special handling, like:
+
+- Debezium's opinionated representation of the column's value is inadequate for the application
+- A column type isn't natively supported, but available in the logs and it needs to be handled
+
+you can implement a custom converter in this way:
+
+[source,java]
+----
+import io.debezium.relational.CustomConverterRegistry.ConverterDefinition;
+import io.debezium.runtime.CustomConverter;
+import io.debezium.spi.converter.ConvertedField;
+import jakarta.enterprise.context.ApplicationScoped;
+import org.apache.kafka.connect.data.SchemaBuilder;
+
+@ApplicationScoped
+public class StringConverter {
+
+    @CustomConverter
+    public ConverterDefinition<SchemaBuilder> bind(ConvertedField field) {
+        return new ConverterDefinition<>(SchemaBuilder.string(), String::valueOf);
+    }
+}
+----
+
+To apply the conversion only to a subset of fields, it’s possible to enrich the `CustomConverter` with a `FieldFilterStrategy` that filters only the interested fields:
+
+[source,java]
+----
+    @CustomConverter(filter = CustomFieldFilterStrategy.class)
+    public ConverterDefinition<SchemaBuilder> filteredBind(ConvertedField field) {
+        // return the converter definition only for selected fields
+    }
+----
+
+[source,java]
+----
+@ApplicationScoped
+public class CustomFieldFilterStrategy implements FieldFilterStrategy {
+
+    @Override
+    public boolean filter(ConvertedField field) {
+        // your logic
+        return false;
+    }
+
+}
+----
+
+== Error Handling
+
+=== Handling Errors in Event Handlers
+
+If an exception is thrown from a `@Capturing` method, the connector will stop processing:
+
+[source,java]
+----
+@Capturing(destination = "products")
+public void handleProduct(ChangeEvent<ProductKey, Product> event) {
+    try {
+        // Process event
+        processProduct(event.after());
+    } catch (Exception e) {
+        // Log error
+        log.error("Failed to process product change", e);
+
+        // Decide: rethrow to stop connector, or swallow to continue
+        // throw new RuntimeException("Failed to process event", e);
+    }
+}
+----
+
+[WARNING]
+====
+By default, any uncaught exception will cause the connector to stop and emit a `ConnectorStoppedEvent`.
+Implement proper error handling and decide whether to:
+
+- Stop the connector (rethrow exception)
+- Skip the problematic event (log and continue)
+- Implement retry logic
+====
+
+=== Retry Strategies
+
+Combine with SmallRye Fault Tolerance for automatic retries:
+
+[source,java]
+----
+import org.eclipse.microprofile.faulttolerance.Retry;
+
+@ApplicationScoped
+public class ProductHandler {
+
+    @Capturing(destination = "products")
+    @Retry(maxRetries = 3, delay = 1000)
+    public void handleProduct(ChangeEvent<ProductKey, Product> event) {
+        // This will retry up to 3 times with 1 second delay
+        externalService.update(event.after());
+    }
+}
+----
+
+== Testing Debezium Applications
+
+[[debezium-dev-services]]
+=== Using Dev Services
+
+Quarkus provides Dev Services for Debezium, which automatically provisions a CDC-ready database during development.
+
+When you add a Debezium extension and run in dev mode, Quarkus will:
+
+1. Start a compatible database container (PostgreSQL, MySQL, etc.)
+2. Configure the database for CDC (enable logical replication, binlog, etc.)
+3. Configure the Debezium connector automatically
+4. Create any necessary database objects (replication slots, CDC tables, etc.)
+
+== Distributed Tracing with OpenTelemetry
+
+Adding OpenTelemetry to a Debezium‑based CDC pipeline gives you end‑to‑end visibility of a business transaction from the moment an application writes to the database, through Debezium’s log capture to downstream consumers. Debezium’s tracing SMT `ActivateTracingSpan` propagate trace context into record headers, letting consumer services seamlessly continue the trace. For further information take a look to the https://debezium.io/documentation/reference/stable/integrations/tracing.html#_activatetracingspan_smt[official documentation].
+
+== Common Integration Use cases
+
+=== Data Migration
+
+Forward Debezium change events to another data source like Kafka using Reactive Messaging:
+
+[source,java]
+----
+import org.eclipse.microprofile.reactive.messaging.Channel;
+import org.eclipse.microprofile.reactive.messaging.Emitter;
+import io.debezium.quarkus.cdi.Capturing;
+import io.debezium.quarkus.cdi.ChangeEvent;
+
+@ApplicationScoped
+public class KafkaForwarder {
+
+    @Channel("product-changes")
+    Emitter<Product> productEmitter;
+
+    @Capturing(destination = "native.inventory.products")
+    public void forwardToKafka(CapturingEvent<SourceRecord> event) {
+        productEmitter.send(event.record());
+    }
+}
+----
+
+=== Database Synchronization
+
+Synchronize changes between two databases:
+
+[source,java]
+----
+@ApplicationScoped
+public class DatabaseSync {
+
+    @Inject
+    @DataSource("target")
+    AgroalDataSource targetDataSource;
+
+    @Capturing(destination = "native.inventory.products")
+    public void syncProduct(CapturingEvent<SourceRecord> event) {
+        try (Connection conn = targetDataSource.getConnection()) {
+            switch (record) {
+                case Create<SourceRecord> event -> insertProduct(conn, event.record());
+                case Delete<SourceRecord> event -> deleteProduct(conn, event.record());
+                case Update<SourceRecord> event -> updateProduct(conn, event.record());
+                default: System.out.println("unexpected message");
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to sync product", e);
+        }
+    }
+}
+----
+
+=== Cache Invalidation
+
+Invalidate cache entries when data changes:
+
+[source,java]
+----
+import io.quarkus.cache.CacheInvalidate;
+
+@ApplicationScoped
+public class CacheManager {
+
+    @Capturing(destination = "native.inventory.products")
+    public void capturing(CapturingEvent<Product> event) {
+        switch (event) {
+            case Create<Product> event -> load(event.id(), event);
+            case Delete<Product> event -> evict(event.id());
+            case Update<Product> event -> evict(event.id());
+            default: System.out.println("event type ");
+        }
+    }
+
+    @CacheResult(cacheName = "products")
+    public void load(@CacheKey String key, Product event) {
+        System.out.println("Cache load for product with key " + key);
+    }
+
+    @CacheInvalidate(cacheName = "products")
+    public void evict(String key) {
+        System.out.println("Cache invalidation for product with key " + key);
+    }
+}
+----
+
+=== Audit Trail Generation
+
+Create comprehensive audit logs:
+
+[source,java]
+----
+@ApplicationScoped
+public class AuditLogger {
+
+    @Inject
+    EntityManager em;
+
+    @Capturing
+    public void logChange(CapturingEvent<SourceRecord> event) {
+        SourceRecord record = event.getRecord();
+
+        AuditLog log = new AuditLog();
+        log.setTableName(extractTableName(record.topic()));
+        log.setOperationType(extractOperation(record));
+        log.setRecordKey(record.key().toString());
+        log.setOldValue(extractBefore(record));
+        log.setNewValue(extractAfter(record));
+        log.setTimestamp(Instant.now());
+        log.setTransactionId(extractTransactionId(record));
+
+        em.persist(log);
+    }
+}
+----
+
+== Troubleshooting
+
+=== Connector Fails to Start
+
+**Problem**: Connector doesn't start, no events received
+
+**Solutions**:
+
+1. Check database CDC is enabled following instructions specific for the datasource
+2. Verify user permissions
+3. Check connector logs for errors
+
+=== Missing Events
+
+**Problem**: Some changes are not captured
+
+**Solutions**:
+
+1. Verify table is included:
++
+[source,properties]
+----
+quarkus.debezium.table.include.list=schema.table1,schema.table2
+----
+
+2. Check if snapshot completed:
++
+[source,java]
+----
+@Capturing
+public void onSnapshot(SnapshotCompletedEvent event) {
+    System.out.println("Snapshot done, now streaming");
+}
+----
+
+3. Verify transaction log retention (logs may have been purged)
+
+=== High Memory Usage
+
+**Problem**: Connector consuming too much memory
+
+**Solutions**:
+
+1. Reduce queue size:
++
+[source,properties]
+----
+quarkus.debezium.max.queue.size=2048
+quarkus.debezium.max.batch.size=512
+----
+
+2. Increase heap size if needed
+
+=== Offset Management Issues
+
+**Problem**: Connector restarts from beginning
+
+**Solutions**:
+
+1. Use persistent offset storage
+2. Don't delete offset storage files
+3. For PostgreSQL, don't drop replication slots
+
+=== Replication Slot Issues (PostgreSQL)
+
+**Problem**: Replication slot grows too large
+
+**Solutions**:
+
+1. Ensure connector is https://debezium.io/documentation/reference/stable/connectors/postgresql.html#postgresql-overview[running] and consuming events
+2. Check for long-running transactions blocking slot advancement
+3. Monitor slot lag:
++
+[source,sql]
+----
+SELECT slot_name,
+       pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS lag
+FROM pg_replication_slots;
+----
+
+4. Drop unused slots:
++
+[source,sql]
+----
+SELECT pg_drop_replication_slot('slot_name');
+----
+5. enable `heartbeat.interval.ms` and `heartbeat.action.query` to advance https://debezium.io/documentation/reference/stable/connectors/postgresql.html#postgresql-wal-disk-space[offsets when there's no data churn]
+
+== Configuration Reference
+
+=== Common Connector Properties
+
+The following properties are common across all Debezium connectors:
+
+[cols="1,1,2",options="header"]
+|===
+|Property |Default |Description
+
+|`quarkus.debezium.name`
+|`debezium-connector`
+|Logical name for this connector instance
+
+|`quarkus.debezium.offset.storage`
+|`MemoryOffsetBackingStore`
+|Class for storing connector offsets
+
+|`quarkus.debezium.offset.flush.interval.ms`
+|`60000`
+|Interval for flushing offsets to storage
+
+|`quarkus.debezium.topic.prefix`
+|(required)
+|Prefix for topic names
+
+|`quarkus.debezium.snapshot.mode`
+|`initial`
+|Snapshot mode: `initial`, `never`, `when_needed`, `schema_only`
+
+|`quarkus.debezium.max.batch.size`
+|`2048`
+|Maximum batch size for polling
+
+|`quarkus.debezium.max.queue.size`
+|`8192`
+|Maximum queue size for events
+
+|`quarkus.debezium.poll.interval.ms`
+|`500`
+|Polling interval in milliseconds
+
+|`quarkus.debezium.table.include.list`
+|
+|Comma-separated list of tables to capture
+
+|`quarkus.debezium.table.exclude.list`
+|
+|Comma-separated list of tables to exclude
+
+|`quarkus.debezium.column.include.list`
+|
+|Comma-separated list of columns to include
+
+|`quarkus.debezium.column.exclude.list`
+|
+|Comma-separated list of columns to exclude
+
+|`quarkus.debezium.heartbeat.interval.ms`
+|`0` (disabled)
+|Interval for heartbeat events
+
+|`quarkus.debezium.schema.history.internal`
+|
+|Class for storing schema history
+
+|===
+
+=== PostgreSQL-Specific Properties
+
+[cols="1,1,2",options="header"]
+|===
+|Property |Default |Description
+
+|`quarkus.debezium.plugin.name`
+|`decoderbufs`
+|Logical decoding plugin: `pgoutput`, `decoderbufs`
+
+|`quarkus.debezium.slot.name`
+|`debezium`
+|Name of PostgreSQL logical replication slot
+
+|`quarkus.debezium.publication.name`
+|
+|Name of PostgreSQL publication
+
+|`quarkus.debezium.publication.autocreate.mode`
+|`all_tables`
+|Auto-create publication: `all_tables`, `filtered`, `disabled`
+
+|`quarkus.debezium.slot.drop.on.stop`
+|`false`
+|Drop replication slot when connector stops
+
+|===
+
+=== MySQL-Specific Properties
+
+[cols="1,1,2",options="header"]
+|===
+|Property |Default |Description
+
+|`quarkus.debezium.database.server.id`
+|(required)
+|Unique server ID for MySQL replication
+
+|`quarkus.debezium.binlog.buffer.size`
+|`0`
+|Buffer size for binlog reading
+
+|`quarkus.debezium.gtid.source.includes`
+|
+|GTID sources to include
+
+|`quarkus.debezium.include.schema.changes`
+|`true`
+|Capture schema change events
+
+|===
+
+=== MongoDB-Specific Properties
+
+[cols="1,1,2",options="header"]
+|===
+|Property |Default |Description
+
+|`quarkus.debezium.mongodb.connection.string`
+|(required)
+|MongoDB connection string
+
+|`quarkus.debezium.collection.include.list`
+|
+|Collections to capture
+
+|`quarkus.debezium.field.include.list`
+|
+|Fields to include in events
+
+|===
+
+== Going Further
+
+This guide has shown how to integrate Debezium with Quarkus to build real-time change data capture applications.
+
+For more information:
+
+* https://debezium.io/documentation/[Debezium Documentation]
+* xref:kafka.adoc[Quarkus Kafka Reference Guide]
+* https://github.com/debezium/debezium-examples[Debezium Examples]
+
+Example applications:
+
+* link:{quickstarts-tree-url}/debezium-quickstart[Debezium Quickstart]
