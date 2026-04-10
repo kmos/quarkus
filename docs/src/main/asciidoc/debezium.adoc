@@ -58,8 +58,9 @@ For connectors specific configuration and requirements take a look to https://de
 
 === Supported datasource
 
-The following datasource are supported by Debezium:
+The following datasource are supported by Debezium in **native mode**:
 
+- `debezium-quarkus-oracle` extension for Oracle Connector
 - `debezium-quarkus-postgres` extension for Postgres Connector
 - `debezium-quarkus-mongodb` extension for Mongodb Connector
 - `debezium-quarkus-mysql` extension for MySQL Connector
@@ -67,11 +68,13 @@ The following datasource are supported by Debezium:
 - `debezium-quarkus-sqlserver` extension for MS Sql Server Connector
 - `debezium-quarkus-db2` extension for db2 Connector
 
+Debezium supports many other connectors (like https://debezium.io/documentation/reference/stable/connectors/informix.html[Informix] and https://debezium.io/documentation/reference/stable/connectors/cassandra.html[Cassandra]) which can work in compatibility mode. For a complete list, please refer to the https://debezium.io/documentation/reference/stable/connectors/index.html[official Documentation].
+
 === Add Debezium Extension
 
 You can add the extension for your database by running the following command in your project base directory (for example `postgres`):
 
-:add-extension-extensions: quarkus-debezium-postgres
+:add-extension-extensions: debezium-quarkus-postgres
 include::{includes}/devtools/extension-add.adoc[]
 
 This will add the following to your build file:
@@ -81,14 +84,33 @@ This will add the following to your build file:
 ----
 <dependency>
     <groupId>io.debezium</groupId>
-    <artifactId>quarkus-debezium-postgres</artifactId>
+    <artifactId>debezium-quarkus-postgres</artifactId>
 </dependency>
 ----
 
 [source,gradle,role="secondary asciidoc-tabs-target-sync-gradle"]
 .build.gradle
 ----
-implementation("io.quarkus:quarkus-debezium-postgres")
+implementation("io.quarkus:debezium-quarkus-postgres")
+----
+
+==== Compatibility Mode
+
+Even when a Quarkus extension is not available for a specific datasource, you can still use the Debezium Quarkus API and annotations by relying on **Compatibility Mode**.
+In Compatibility Mode, you run a Debezium Source Connector with the Debezium Engine powered by Quarkus. The main limitation of this approach is that a native build cannot be guaranteed.
+For example, if you want to use the https://debezium.io/documentation/reference/stable/connectors/informix.html[Debezium connector for Informix], you must add the `debezium-quarkus-engine` dependency together with the connector itself:
+
+[source,xml,role="primary asciidoc-tabs-target-sync-cli asciidoc-tabs-target-sync-maven"]
+.pom.xml
+----
+<dependency>
+    <groupId>io.debezium</groupId>
+    <artifactId>debezium-quarkus-engine</artifactId>
+</dependency>
+<dependency>
+    <groupId>io.debezium</groupId>
+    <artifactId>debezium-connector-informix</artifactId>
+</dependency>
 ----
 
 == Configuring Debezium Connector
@@ -254,7 +276,7 @@ public class ProductEventHandler {
 <1> Declare the value type for automatic deserialization
 <2> Get the operation type
 
-To achive it, there is an existing `ObjectMapperDeserializer` that can be used to deserialize all data objects via Jackson. The corresponding deserializer class needs to be subclassed. So, we have to create a `ProductDeserializer` that extends the `ObjectMapperDeserializer`.
+To achieve it, there is an existing `ObjectMapperDeserializer` that can be used to deserialize all data objects via Jackson. The corresponding deserializer class needs to be subclassed. So, we have to create a `ProductDeserializer` that extends the `ObjectMapperDeserializer`.
 
 [source,java]
 ----
@@ -327,7 +349,7 @@ public class LifecycleListener {
 }
 ----
 
-The complete events meaning are available in the https://debezium.io/documentation/reference/3.4/integrations/quarkus-debezium-engine-extension.html#_lifecycle_events[official documentation].
+The complete events meaning are available in the https://debezium.io/documentation/reference/stable/integrations/quarkus-debezium-engine-extension.html#_lifecycle_events[official documentation].
 
 === Heartbeat Events
 
